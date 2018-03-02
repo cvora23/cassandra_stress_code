@@ -21,6 +21,9 @@ import java.io.*;
 import java.net.Socket;
 import java.net.SocketException;
 
+import com.datastax.driver.core.Cluster;
+import com.datastax.driver.core.DataType;
+import com.datastax.driver.core.TupleType;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.stress.settings.StressSettings;
 import org.apache.cassandra.stress.util.MultiResultLogger;
@@ -80,6 +83,9 @@ public final class Stress
                 settings = StressSettings.parse(arguments);
                 if (settings == null)
                     return 0; // special settings action
+                Cluster cluster = settings.getJavaDriverClient().getCluster();
+                TupleType tupleType = cluster.getMetadata().newTupleType(DataType.cint(),DataType.bigint());
+                cluster.getConfiguration().getCodecRegistry().register(new MyTupleCodec(tupleType));
             }
             catch (IllegalArgumentException e)
             {

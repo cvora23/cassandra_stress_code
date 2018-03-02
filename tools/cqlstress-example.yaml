@@ -10,7 +10,6 @@
 # mixed workload (90/10)
 # cassandra-stress user profile=/home/jake/stress1.yaml ops(insert=1,simple1=9)
 
-
 #
 # Keyspace info
 #

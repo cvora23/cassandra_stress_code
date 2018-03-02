@@ -28,8 +28,11 @@ import java.io.Serializable;
 import java.net.URI;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
+import javax.ws.rs.GET;
 
 import com.google.common.base.Function;
 import com.google.common.util.concurrent.Uninterruptibles;
@@ -38,6 +41,7 @@ import com.datastax.driver.core.*;
 import com.datastax.driver.core.TableMetadata;
 import com.datastax.driver.core.exceptions.AlreadyExistsException;
 import org.antlr.runtime.RecognitionException;
+import org.apache.cassandra.cql3.CQL3Type;
 import org.apache.cassandra.cql3.CQLFragmentParser;
 import org.apache.cassandra.cql3.CqlParser;
 import org.apache.cassandra.cql3.QueryProcessor;
@@ -91,6 +95,10 @@ public class StressProfile implements Serializable
     transient volatile Map<String, PreparedStatement> queryStatements;
 
     private static final Pattern lowercaseAlphanumeric = Pattern.compile("[a-z0-9_]+");
+
+
+    private static final String COLLECTION_TYPE_SEPARTOR = "_";
+    private static final String TUPLE_COLLECTION_TYPE_AGGREGATOR = "-";
 
 
     public void printSettings(ResultLogger out, StressSettings stressSettings)
@@ -308,7 +316,8 @@ public class StressProfile implements Serializable
                     if (columnConfigs.containsKey(col.getName()))
                         continue;
 
-                    columnConfigs.put(col.getName(), new GeneratorConfig(seedStr + col.getName(), null, null, null));
+                    columnConfigs.put(col.getName(), new GeneratorConfig(seedStr + col.getName(),
+                                                                         null, null, null));
                 }
 
                 tableMetaData = metadata;
@@ -662,17 +671,40 @@ public class StressProfile implements Serializable
 
             for (com.datastax.driver.core.ColumnMetadata metadata : tableMetaData.getPartitionKey())
                 partitionKeys.add(new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
-                                                 metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
-                                                 columnConfigs.get(metadata.getName())));
+                             metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
+                             columnConfigs.get(metadata.getName())));
             for (com.datastax.driver.core.ColumnMetadata metadata : tableMetaData.getClusteringColumns())
-                clusteringColumns.add(new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
-                                                     metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
-                                                     columnConfigs.get(metadata.getName())));
+                            clusteringColumns.add(new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
+                            metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
+                             columnConfigs.get(metadata.getName())));
             for (com.datastax.driver.core.ColumnMetadata metadata : tableMetaData.getColumns())
-                if (!keyColumns.contains(metadata))
-                    valueColumns.add(new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
-                                                    metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
-                                                    columnConfigs.get(metadata.getName())));
+                if (!keyColumns.contains(metadata)){
+                    String type = metadata.getType().getName().toString();
+                    // Will Work only for COS type case - TODO - Maybe better logic to add as a plugin model
+                    if(type.equals("map")){
+                        String mapType1 = metadata.getType().getTypeArguments().get(0).getName().toString();
+                        String mapType2 = metadata.getType().getTypeArguments().get(1).getName().toString();
+                        String collectionType = "";
+                        if(mapType2.equals("tuple")){
+                            TupleType dataType = (TupleType) metadata.getType().getTypeArguments().get(1);
+                            List<DataType> componentTypes = dataType.getComponentTypes();
+                            String tupleType1 = componentTypes.get(0).getName().toString();
+                            String tupleType2 = componentTypes.get(1).getName().toString();
+                            collectionType = mapType1 + COLLECTION_TYPE_SEPARTOR + mapType2 + TUPLE_COLLECTION_TYPE_AGGREGATOR +
+                                                    tupleType1 + COLLECTION_TYPE_SEPARTOR + tupleType2;
+                            System.out.println("CollectionType = "+ collectionType);
+                        }
+                        valueColumns.add(new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
+                                                        metadata.getType().isCollection() ? collectionType : "",
+                                                        columnConfigs.get(metadata.getName())));
+
+                    }else{
+                        valueColumns.add(new ColumnInfo(metadata.getName(), metadata.getType().getName().toString(),
+                                                        metadata.getType().isCollection() ? metadata.getType().getTypeArguments().get(0).getName().toString() : "",
+                                                        columnConfigs.get(metadata.getName())));
+                    }
+                }
+
         }
 
         PartitionGenerator newGenerator(StressSettings settings)
@@ -754,8 +786,47 @@ public class StressProfile implements Serializable
                     return new Sets(name, getGenerator(name, collectionType, null, config), config);
                 case "LIST":
                     return new Lists(name, getGenerator(name, collectionType, null, config), config);
+                case "MAP":
+                {
+                    Pattern pattern = Pattern.compile(COLLECTION_TYPE_SEPARTOR);
+                    Matcher matcher = pattern.matcher(collectionType);
+                    String mapType1 = "";
+                    String mapType2 = "";
+                    if (matcher.find()) {
+                        mapType1 = collectionType.substring(0, matcher.start());
+                        mapType2 = collectionType.substring(matcher.end());
+                    }
+                    final Generator keyTypeGenerator = getGenerator(name, mapType1, null, config);
+                    if(mapType2.contains("tuple")){
+                        Pattern tuplePattern = Pattern.compile(TUPLE_COLLECTION_TYPE_AGGREGATOR);
+                        matcher = tuplePattern.matcher(mapType2);
+                        String tupleBaseType = "";
+                        String tupleCollectionType = "";
+                        if (matcher.find()) {
+                            tupleBaseType = mapType2.substring(0, matcher.start());
+                            tupleCollectionType = mapType2.substring(matcher.end());
+                        }
+                        final Generator valueTypeGenerator = getGenerator(name, tupleBaseType, tupleCollectionType, config);
+                        return new Maps(name, keyTypeGenerator,valueTypeGenerator, config);
+                    }
+                }
+                case "TUPLE":
+                {
+                    Pattern pattern = Pattern.compile(COLLECTION_TYPE_SEPARTOR);
+                    Matcher matcher = pattern.matcher(collectionType);
+                    String tupleType1 = "";
+                    String tupleType2 = "";
+                    if (matcher.find()) {
+                        tupleType1 = collectionType.substring(0, matcher.start());
+                        tupleType2 = collectionType.substring(matcher.end());
+                    }
+                    final Generator tupleType1Generator = getGenerator(name,tupleType1,null,config);
+                    final Generator tupleType2Generator = getGenerator(name,tupleType2,null,config);
+                    return new Tuples(name,tupleType1Generator,tupleType2Generator,config);
+                }
                 default:
-                    throw new UnsupportedOperationException("Because of this name: "+name+" if you removed it from the yaml and are still seeing this, make sure to drop table");
+                    throw new UnsupportedOperationException("Because of this name: "+name+" if you removed it from the yaml " +
+                                                            "and are still seeing this, make sure to drop table");
             }
         }
     }

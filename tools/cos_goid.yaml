@@ -1,0 +1,44 @@
+### DML ### THIS IS UNDER CONSTRUCTION!!!
+ 
+# Keyspace Name
+keyspace: cos
+ 
+# Table name
+table: goid
+
+### Column Distribution Specifications ### - Approx 150 bytes for each entry
+ 
+columnspec:
+  - name: goid
+    size: uniform(30..50)                       # 30-50 characters long
+    population: seq(1..10)                      # 1-10 different values   
+ 
+  - name: id
+    size: uniform(5..10)                        # 30-50 characters long
+    population: seq(1..10)                      # 1-10 different values   
+
+  - name: objects
+    size: uniform(5..10)                        # 30-50 characters long
+    population: seq(1..10)                      # 1-10 different values   
+ 
+  - name: resgrp
+    size: uniform(5..10)                        # 5-10 entries
+    population: seq(1..1000000000)              # Numbers ranging from 1 - 1 Billion
+   
+### Batch Ratio Distribution Specifications ###
+ 
+insert:
+  partitions: fixed(1)            # 1 partition per batch
+ 
+  select:  fixed(10)/10           # No chance of skipping a row per partition when generating inserts   
+ 
+  batchtype: UNLOGGED             # Unlogged batches 
+ 
+#
+# A list of queries you wish to run against the schema
+#
+queries:
+   readquery1: 
+    cql: SELECT * FROM goid WHERE goid = ?
+    fields: samerow
+
